@@ -1,6 +1,9 @@
-name: Tests
+name: Test and Deploy
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [master]
+  pull_request:
 
 jobs:
   test:
@@ -13,3 +16,44 @@ jobs:
 
       - name: Run tests
         run: docker run -e CI=true sushant564/docker_kub npm run test -- --coverage
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: us-east-1
+      EB_APP: Docker_kub
+      EB_ENV: Dockerkub-env-1
+      S3_BUCKET: elasticbeanstalk-us-east-1-269469693628
+      S3_PATH: docker_kub
+      VERSION: ${{ github.sha }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Zip source
+        run: zip -r deploy.zip . -x '.git/*' 'node_modules/*' 'build/*'
+
+      - name: Upload to S3
+        run: aws s3 cp deploy.zip "s3://$S3_BUCKET/$S3_PATH/$VERSION.zip"
+
+      - name: Create application version
+        run: |
+          aws elasticbeanstalk create-application-version \
+            --application-name "$EB_APP" \
+            --version-label "$VERSION" \
+            --source-bundle S3Bucket="$S3_BUCKET",S3Key="$S3_PATH/$VERSION.zip"
+
+      - name: Deploy to environment
+        run: |
+          aws elasticbeanstalk update-environment \
+            --environment-name "$EB_ENV" \
+            --version-label "$VERSION"
+          aws elasticbeanstalk wait environment-updated --environment-names "$EB_ENV"
